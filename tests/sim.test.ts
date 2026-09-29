@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { makeBotController, rollPersonality } from '../src/sim/bot';
 import { EMPTY } from '../src/sim/grid';
-import { World, type Loadout } from '../src/sim/world';
+import { BASE_SPEED, World, type Loadout } from '../src/sim/world';
 
 const LOADOUT: Loadout = { charId: 'pip', ability: null, abilityPower: 1, cooldownMul: 1, startRadius: 3.5 };
 const DT = 1 / 60;
+/** Seconds to travel `cells` at the sim's base speed. */
+const travel = (cells: number) => cells / BASE_SPEED;
 
 function world(size = 120) {
   return new World({ shape: 'square', size, rocks: 0, seed: 7 });
@@ -33,10 +35,10 @@ describe('territory capture', () => {
     const before = w.cells(p);
     // Out east, turn south, west, then north back home: a rectangle.
     drive(w, p, [
-      [0, 1.2],
-      [Math.PI / 2, 1.2],
-      [Math.PI, 1.6],
-      [-Math.PI / 2, 1.4],
+      [0, travel(11)],
+      [Math.PI / 2, travel(11)],
+      [Math.PI, travel(12)],
+      [-Math.PI / 2, travel(13)],
     ]);
     expect(p.alive).toBe(true);
     expect(p.trail.length).toBe(0);
@@ -58,8 +60,22 @@ describe('territory capture', () => {
     expect(b.alive).toBe(false);
     expect(a.alive).toBe(true);
     expect(a.kills).toBe(1);
-    // Victim territory cleared.
+    // The cutter inherits the land. Nothing of the victim's remains.
     expect(w.grid.counts[b.id]).toBe(0);
+    expect(w.cells(a)).toBeGreaterThan(70);
+  });
+
+  it('does not cut an ally trail', () => {
+    const w = world();
+    const a = w.addPlayer('a', false, LOADOUT, { x: 40.5, y: 60.5 })!;
+    const b = w.addPlayer('b', false, LOADOUT, { x: 60.5, y: 47.5 })!;
+    a.team = b.team = 1;
+    a.angle = a.targetAngle = 0;
+    b.angle = b.targetAngle = Math.PI / 2;
+    a.shieldUntil = b.shieldUntil = 0;
+    for (let t = 0; t < 3; t += DT) w.step(DT);
+    expect(a.alive).toBe(true);
+    expect(b.alive).toBe(true);
   });
 
   it('dies when crossing its own trail', () => {
@@ -68,10 +84,10 @@ describe('territory capture', () => {
     p.angle = 0;
     p.shieldUntil = 0;
     drive(w, p, [
-      [0, 1.5],
-      [Math.PI / 2, 0.5],
-      [Math.PI, 0.5],
-      [-Math.PI / 2, 1.2],
+      [0, travel(14)],
+      [Math.PI / 2, travel(5)],
+      [Math.PI, travel(5)],
+      [-Math.PI / 2, travel(12)],
     ]);
     expect(p.alive).toBe(false);
   });

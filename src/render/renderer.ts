@@ -102,7 +102,9 @@ export class Renderer {
       alpha: false,
       premultipliedAlpha: true,
       powerPreference: 'high-performance',
+      desynchronized: true,
       preserveDrawingBuffer: false,
+      stencil: true,
     });
     if (!gl) throw new Error('WebGL2 is not available on this device.');
     this.gl = gl;
@@ -110,7 +112,7 @@ export class Renderer {
     const common = ['uPal', 'uCam', 'uScale', 'uRes', 'uTime'];
     this.terrain = compile(gl, TERRAIN_VS, TERRAIN_FS, [...common, 'uFine', 'uFineOrigin', 'uK', 'uFineSize', 'uCap', 'uGridSize']);
     this.smooth = compile(gl, TERRAIN_VS, SMOOTH_FS, ['uOwn', 'uGridSize', 'uOrigin', 'uK']);
-    this.trail = compile(gl, TRAIL_VS, TRAIL_FS, common);
+    this.trail = compile(gl, TRAIL_VS, TRAIL_FS, [...common, 'uYou']);
     this.head = compile(gl, HEAD_VS, HEAD_FS, [...common, 'uAtlas', 'uAtlasGrid']);
     this.part = compile(gl, PARTICLE_VS, PARTICLE_FS, common);
 
@@ -359,9 +361,10 @@ export class Renderer {
 
     const lerp = (p: Player) => [p.px + (p.x - p.px) * alpha, p.py + (p.y - p.py) * alpha];
 
-    // Trails
+    // Trails. Stencil keeps one fragment per pixel so overlapping capsules
+    // stay a single ribbon instead of stacking into ribs.
     let nt = 0;
-    const pushSeg = (x0: number, y0: number, x1: number, y1: number, id: number) => {
+    const pushSeg = (x0: number, y0: number, x1: number, y1: number, id: number, rad: number) => {
       if (nt * 6 >= this.trailData.length) {
         const bigger = new Float32Array(this.trailData.length * 2);
         bigger.set(this.trailData);
@@ -374,26 +377,50 @@ export class Renderer {
       d[o + 2] = x1;
       d[o + 3] = y1;
       d[o + 4] = id;
-      d[o + 5] = 0.46;
+      d[o + 5] = rad;
       nt++;
     };
-    for (const p of world.players) {
-      if (!p.alive || p.trailPts.length < 2) continue;
+    const pushTrail = (p: Player) => {
+      if (!p.alive || p.trailPts.length < 2) return;
       const pts = p.trailPts;
+      const yours = p.id === f.youId;
+      const rad = yours ? 0.72 : 0.5;
       for (let k = 0; k + 3 < pts.length; k += 2) {
         if (!vis(pts[k], pts[k + 1], 2) && !vis(pts[k + 2], pts[k + 3], 2)) continue;
-        pushSeg(pts[k], pts[k + 1], pts[k + 2], pts[k + 3], p.id);
+        pushSeg(pts[k], pts[k + 1], pts[k + 2], pts[k + 3], p.id, rad);
       }
       const [hx, hy] = lerp(p);
-      pushSeg(pts[pts.length - 2], pts[pts.length - 1], hx, hy, p.id);
-    }
-    if (nt) {
+      const dx = Math.cos(p.angle);
+      const dy = Math.sin(p.angle);
+      const lx = pts[pts.length - 2];
+      const ly = pts[pts.length - 1];
+      const nx = hx - dx * 0.42;
+      const ny = hy - dy * 0.42;
+      pushSeg(lx, ly, nx, ny, p.id, rad);
+      pushSeg(nx, ny, hx + dx * 0.12, hy + dy * 0.12, p.id, yours ? rad * 0.92 : rad);
+    };
+    const flushTrails = () => {
+      if (!nt) return;
       this.setCommon(this.trail, cam, world.time);
+      gl.uniform1i(this.trail.u.uYou, f.youId);
       gl.bindVertexArray(this.trailVAO);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.trailBuf);
       gl.bufferData(gl.ARRAY_BUFFER, this.trailData.subarray(0, nt * 6), gl.DYNAMIC_DRAW);
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, nt);
-    }
+      nt = 0;
+    };
+    gl.enable(gl.STENCIL_TEST);
+    gl.stencilMask(0xff);
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+    gl.stencilFunc(gl.NOTEQUAL, 1, 0xff);
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+    for (const p of world.players) if (p.id !== f.youId) pushTrail(p);
+    flushTrails();
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+    const you = world.byId[f.youId];
+    if (you) pushTrail(you);
+    flushTrails();
+    gl.disable(gl.STENCIL_TEST);
 
     // Heads, back to front.
     const heads = world.players.filter((p) => p.alive && vis(p.x, p.y, 3));

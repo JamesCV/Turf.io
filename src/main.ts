@@ -3,20 +3,25 @@ import { Capacitor } from '@capacitor/core';
 import { CHARACTERS } from './content/characters';
 import { ALL_LEVELS, LEVEL_BY_ID } from './content/levels';
 import { Input } from './game/input';
-import { Session, type MatchConfig, type MatchResult } from './game/session';
-import { claimDaily, currentLoadout, loadProfile, profile } from './meta/profile';
+import { captureSnapshot, type NetSnapshot } from './game/netstate';
+import { Session, type MatchConfig, type MatchResult, type RemoteSeat } from './game/session';
+import { claimDaily, currentLoadout, loadProfile, profile, rankedLoadout } from './meta/profile';
 import { grantRewards } from './meta/rewards';
 import { sfx } from './platform/audio';
 import { setHapticsEnabled } from './platform/haptics';
+import { PartyRoom } from './platform/room';
 import { Renderer } from './render/renderer';
 import { makeBotController, rollPersonality } from './sim/bot';
+import type { MapShape } from './sim/maps';
 import { h } from './ui/dom';
 import { Hud } from './ui/hud';
 import {
   charsScreen,
   conquestScreen,
+  finderScreen,
   levelIntroModal,
   menuScreen,
+  partyScreen,
   pauseModal,
   resultsModal,
   settingsScreen,
@@ -40,6 +45,14 @@ class App implements AppApi {
   private hud: Hud | null = null;
   private inMatch = false;
   private lastCfg: MatchConfig | null = null;
+  private room: PartyRoom | null = null;
+  private netRole: 'host' | 'guest' | null = null;
+  private youKey = '';
+  private searchTimer = 0;
+  private netAcc = 0;
+  private gridAcc = 1;
+  private lastSentAngle: number | null = null;
+  private pendingSnap: NetSnapshot | null = null;
   private cssW = 1;
   private cssH = 1;
   private last = performance.now();
@@ -140,6 +153,172 @@ class App implements AppApi {
 
   // ---------------------------------------------------------------- matches
 
+  playFree(): void {
+    this.queueSearch('Connecting to an open lobby', 'The table fills as soon as a seat is free. Own the whole map.', () => {
+      this.start({
+        mode: 'free',
+        map: { shape: 'circle', size: 200, rocks: 6, seed: (Math.random() * 1e9) | 0 },
+        bots: 9,
+        difficulty: ['easy', 'normal', 'normal', 'hard'],
+        duration: 300,
+        winShare: 0.995,
+        respawnYou: true,
+        respawnBots: true,
+        youName: profile.name,
+      });
+    });
+  }
+
+  playRanked(): void {
+    this.queueSearch('Finding a ranked lobby', 'Same loadout for everyone. Your rating moves with the finish.', () => {
+      this.start({
+        mode: 'ranked',
+        map: { shape: 'circle', size: 190, rocks: 5, seed: (Math.random() * 1e9) | 0 },
+        bots: 7,
+        difficulty: ['normal', 'normal', 'hard'],
+        duration: 210,
+        winShare: 0.995,
+        respawnYou: false,
+        respawnBots: false,
+        youName: profile.name,
+      }, rankedLoadout());
+    });
+  }
+
+  playParty(): void {
+    this.dropRoom();
+    this.showParty('pick');
+  }
+
+  private queueSearch(title: string, detail: string, go: () => void): void {
+    window.clearTimeout(this.searchTimer);
+    this.dropRoom();
+    this.screens.replaceChildren(finderScreen(title, detail, () => {
+      window.clearTimeout(this.searchTimer);
+      this.goHome();
+    }));
+    this.searchTimer = window.setTimeout(go, 720);
+  }
+
+  private showParty(phase: 'pick' | 'room'): void {
+    const room = this.room;
+    this.screens.replaceChildren(partyScreen({
+      phase,
+      code: room?.code ?? '',
+      status: room?.status ?? '',
+      seats: (room?.seats ?? []).map((s) => ({ name: s.name, team: s.team, self: s.self })),
+      host: !!room?.isHost,
+      onHost: () => void this.hostParty(),
+      onJoin: (code) => void this.joinParty(code),
+      onStart: () => this.beginParty(),
+      onLeave: () => this.goHome(),
+    }));
+  }
+
+  private bindRoom(room: PartyRoom): void {
+    room.onRoster = () => {
+      if (!this.inMatch) this.showParty('room');
+    };
+    room.onInput = (from, angle, ability) => {
+      this.session.setRemoteAngle(from, angle);
+      if (ability) this.session.remoteAbility(from);
+    };
+    room.onState = (snap) => {
+      if (this.netRole === 'guest' && this.inMatch) this.session.applyNet(snap, this.youKey);
+      else this.pendingSnap = snap;
+    };
+    room.onStart = (msg) => {
+      this.youKey = msg.youKey;
+      this.startGuest(msg.spec);
+      if (this.pendingSnap) this.session.applyNet(this.pendingSnap, this.youKey);
+    };
+  }
+
+  private async hostParty(): Promise<void> {
+    const room = new PartyRoom();
+    this.room = room;
+    this.bindRoom(room);
+    this.screens.replaceChildren(finderScreen('Opening a party', 'Share the code once it appears.', () => this.goHome()));
+    try {
+      await room.host(profile.name, profile.charId);
+      if (this.room !== room) return;
+      this.netRole = 'host';
+      this.showParty('room');
+    } catch (e) {
+      this.toast(e instanceof Error ? e.message : 'Could not open a party.');
+      this.goHome();
+    }
+  }
+
+  private async joinParty(code: string): Promise<void> {
+    const room = new PartyRoom();
+    this.room = room;
+    this.bindRoom(room);
+    this.screens.replaceChildren(finderScreen('Joining party', code.toUpperCase(), () => this.goHome()));
+    try {
+      await room.join(code, profile.name, profile.charId);
+      if (this.room !== room) return;
+      this.netRole = 'guest';
+      this.showParty('room');
+    } catch (e) {
+      this.toast(e instanceof Error ? e.message : 'Could not join that party.');
+      this.dropRoom();
+      this.showParty('pick');
+    }
+  }
+
+  private partySpec(seed = (Math.random() * 1e9) | 0) {
+    return { shape: 'circle' as MapShape, size: 168, rocks: 4, seed };
+  }
+
+  private beginParty(seed?: number): void {
+    const room = this.room;
+    if (!room?.isHost) return;
+    const spec = this.partySpec(seed);
+    room.locked = true;
+    if (room.live) room.sendStart(spec);
+    const remotes: RemoteSeat[] = room.remotes().map((s) => ({
+      name: s.name,
+      team: s.team,
+      charId: s.charId,
+      key: s.key,
+    }));
+    this.youKey = 'host';
+    this.gridAcc = 1;
+    this.start({
+      mode: 'party',
+      map: spec,
+      bots: 0,
+      difficulty: ['normal', 'hard'],
+      duration: 240,
+      winShare: 0.995,
+      respawnYou: true,
+      respawnBots: true,
+      teams: true,
+      youTeam: 1,
+      remotes,
+      youName: profile.name,
+    });
+  }
+
+  private startGuest(spec: { shape: string; size: number; rocks: number; seed: number }): void {
+    this.gridAcc = 1;
+    this.start({
+      mode: 'party',
+      map: { shape: spec.shape as MapShape, size: spec.size, rocks: spec.rocks, seed: spec.seed },
+      bots: 0,
+      difficulty: ['normal'],
+      duration: 240,
+      winShare: 0.995,
+      respawnYou: true,
+      teams: true,
+      youTeam: 1,
+      observe: true,
+      youName: profile.name,
+      ability: profile.ability,
+    });
+  }
+
   playClassic(): void {
     this.start({
       mode: 'classic',
@@ -181,14 +360,19 @@ class App implements AppApi {
     this.screens.append(wrap);
   }
 
-  private start(cfg: MatchConfig): void {
+  private start(cfg: MatchConfig, loadout = currentLoadout()): void {
+    window.clearTimeout(this.searchTimer);
     this.endMatch();
     this.lastCfg = cfg;
     this.screens.replaceChildren();
-    this.replaceSession(new Session(cfg, currentLoadout(), (r) => this.onEnd(r)));
+    this.netAcc = 1;
+    this.replaceSession(new Session(cfg, cfg.observe ? null : loadout, (r) => this.onEnd(r)));
     const s = this.session;
     this.input = new Input($('gl'), () => s.youScreenPos(this.cssW, this.cssH));
-    this.hud = new Hud(s, () => this.pause(), () => s.tryAbility());
+    this.hud = new Hud(s, () => this.pause(), () => {
+      if (this.netRole === 'guest') this.room?.send({ type: 'input', angle: this.input?.angle ?? null, ability: true });
+      else s.tryAbility();
+    });
     this.hudEl.replaceChildren(this.hud.root);
     this.inMatch = true;
   }
@@ -204,11 +388,14 @@ class App implements AppApi {
 
   private pause(): void {
     if (!this.inMatch || this.session.paused) return;
-    this.session.paused = true;
+    const guest = this.netRole === 'guest';
+    if (!guest) this.session.paused = true;
+    else if (this.input) this.input.enabled = false;
     const m = pauseModal({
       resume: () => {
         m.remove();
-        this.session.paused = false;
+        if (!guest) this.session.paused = false;
+        else if (this.input) this.input.enabled = true;
         this.last = performance.now();
       },
       quit: () => {
@@ -220,9 +407,19 @@ class App implements AppApi {
   }
 
   private goHome(): void {
+    window.clearTimeout(this.searchTimer);
     this.endMatch();
+    this.dropRoom();
     this.replaceSession(this.attract());
     this.show('menu');
+  }
+
+  private dropRoom(): void {
+    this.room?.close();
+    this.room = null;
+    this.netRole = null;
+    this.pendingSnap = null;
+    this.youKey = '';
   }
 
   private replaceSession(next: Session): void {
@@ -242,7 +439,12 @@ class App implements AppApi {
     const modal = resultsModal(r, rw, {
       again: () => {
         if (r.mode === 'conquest' && r.levelId) this.playLevel(r.levelId);
-        else if (this.lastCfg) this.start({ ...this.lastCfg, map: { ...this.lastCfg.map, seed: (Math.random() * 1e9) | 0 } });
+        else if (r.mode === 'party' && this.room?.isHost) this.beginParty();
+        else if (r.mode === 'party' && this.netRole === 'guest') this.toast('Waiting for the host to start the next one');
+        else if (this.lastCfg) {
+          const loadout = r.mode === 'ranked' ? rankedLoadout() : currentLoadout();
+          this.start({ ...this.lastCfg, map: { ...this.lastCfg.map, seed: (Math.random() * 1e9) | 0 } }, loadout);
+        }
       },
       home: () => this.goHome(),
       next: next
@@ -270,6 +472,7 @@ class App implements AppApi {
     this.last = now;
     const s = this.session;
     s.update(dt, this.inMatch ? this.input : null, Math.min(this.cssW, this.cssH));
+    this.relay(dt);
     s.render(this.renderer, now / 1000);
 
     this.octx.clearRect(0, 0, this.cssW, this.cssH);
@@ -283,6 +486,33 @@ class App implements AppApi {
     this.adaptQuality(dt);
     requestAnimationFrame(this.frame);
   };
+
+  /** Host streams the match. Guests send steering back. */
+  private relay(dt: number): void {
+    const room = this.room;
+    if (!room?.live || !this.inMatch) return;
+    if (this.netRole === 'host') {
+      this.netAcc += dt;
+      if (this.netAcc < 1 / 15) return;
+      this.netAcc = 0;
+      this.gridAcc += 1 / 15;
+      const grid = this.gridAcc >= 0.45;
+      if (grid) this.gridAcc = 0;
+      const snap = captureSnapshot(this.session.world, grid, this.session.over);
+      room.send({ type: 'state', t: snap.t, players: snap.players, rle: snap.rle, over: snap.over });
+      return;
+    }
+    const input = this.input;
+    if (this.netRole !== 'guest' || !input?.enabled) return;
+    input.poll();
+    const ability = input.consumeAbility();
+    const angle = input.angle;
+    this.netAcc += dt;
+    if (!ability && this.netAcc < 1 / 20 && angle === this.lastSentAngle) return;
+    this.netAcc = 0;
+    this.lastSentAngle = angle;
+    room.send({ type: 'input', angle, ability });
+  }
 
   /** Drop render resolution on slow devices, recover when there is headroom. */
   private adaptQuality(dt: number): void {
