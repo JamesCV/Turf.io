@@ -17,6 +17,8 @@ npm install
 npm run dev        # http://localhost:5173 (mouse aims, WASD/arrows steer, Space = ability)
 ```
 
+On an iPhone, open [https://jamescv.github.io/Turf.io/](https://jamescv.github.io/Turf.io/) in Safari, then **Share → Add to Home Screen**. That is the same WebGL build the app ships, fullscreen, with the drag-anywhere joystick. The native Capacitor shell (haptics, Preferences saves, hidden status bar) is the Xcode build below.
+
 ## Build for iOS
 
 You need a Mac with Xcode 16+ and Node 20+. The iOS project lives in `ios/` and uses Capacitor 8 with Swift Package Manager, so there is no CocoaPods step.
