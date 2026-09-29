@@ -1,0 +1,23 @@
+import type { CapacitorConfig } from '@capacitor/cli';
+
+const config: CapacitorConfig = {
+  appId: 'io.turf.game',
+  appName: 'Turf.io',
+  webDir: 'dist',
+  backgroundColor: '#0f1020',
+  ios: {
+    contentInset: 'never',
+    scrollEnabled: false,
+    backgroundColor: '#0f1020',
+    preferredContentMode: 'mobile',
+  },
+  plugins: {
+    SplashScreen: {
+      launchShowDuration: 600,
+      backgroundColor: '#0f1020',
+      showSpinner: false,
+    },
+  },
+};
+
+export default config;

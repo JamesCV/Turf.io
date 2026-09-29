@@ -1,7 +1,7 @@
 # Turf.io — Game Design Plan (v0.1, pre-build)
 
-> Status: **Draft for discussion.** Nothing here is final. Numbers are starting points we tune in playtests.
-> Anything marked **❓ Decision** needs an answer before we build that part.
+> Status: **v0.1 is built.** It covers phases 0–2 plus a first slice of World Conquest; see §13.
+> Numbers are starting points we tune in playtests. Anything marked **❓ Decision** is still open.
 
 ---
 
@@ -323,3 +323,26 @@ docs/
 5. **Art direction**: flat/clean like paper.io, or something more stylized (e.g., toy-like, neon, hand-drawn)?
 6. **Upgrades online**: happy with "capped in casual, normalized in Ranked"? Or should *all* online play be normalized, with upgrades only in solo modes?
 7. **Scope for v1**: agree with MVP = Classic + Timed Arena + World Conquest (2–3 regions)?
+
+---
+
+## 13. Build status (v0.1)
+
+**Decided:** iOS first. It is built as a TypeScript + WebGL2 game wrapped natively with Capacitor (Swift Package Manager). There are no ads and no in-app purchases.
+
+**Built**
+- Core sim: free-angle steering, trails, flood-fill capture, trail cuts, self-hits, head-ons, wall sliding. Deterministic and DOM-free, so it can move to a server.
+- Bots: utility AI (expand / return / hunt / flee) with per-bot personalities and Easy/Normal/Hard/Boss tiers. Slots refill automatically. The balance probe (`npm run balance`) shows most bot deaths come from real fights, not blunders.
+- Visuals:
+  - One full-screen shader rebuilds smooth, raised, patterned territory from the owner grid, using a B-spline super-sampling pre-pass.
+  - 19 GPU patterns, 5 of them animated.
+  - Capture ripple flashes, particle bursts, camera shake, squash and stretch, and pupils that follow your heading.
+- **Characters change skin and territory pattern together** (21 characters across 4 rarities).
+- Modes: Classic (340-cell map, 24 rivals), Arena (3 minutes, respawns), World Conquest (3 regions × 5 levels, boss finales, 3-star par times).
+- Progression: coins, gems, XP levels, daily streak rewards, characters, 3 abilities, 4 capped upgrades.
+- iOS: haptics, native save storage, safe areas, fullscreen, generated icon and splash, dynamic resolution scaling, GL context-loss recovery.
+
+**Next up** (from the roadmap)
+- Multiplayer server with bot backfill (§9). The sim is already shared-code ready.
+- Province buildings and counter-attacks for Conquest (§5.1, §6.6), Teams, Ranked, Faction War, Expedition.
+- Real-device performance pass on older iPhones, and audio polish.
