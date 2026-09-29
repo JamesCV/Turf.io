@@ -475,6 +475,7 @@ ${PALETTE}
 ${PATTERNS}
 uniform float uScale;
 uniform float uTime;
+uniform int uYou;
 in vec2 vWorld;
 flat in vec4 vSeg;
 flat in int vId;
@@ -486,12 +487,15 @@ void main() {
   float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
   float d = length(pa - ba * h) - vRad;
   float px = 1.0 / uScale;
-  float alpha = fillSDF(d, px * 0.9);
+  float alpha = fillSDF(d, px * 1.35);
   if (alpha <= 0.0) discard;
+  float hot = vId == uYou ? 1.0 : 0.0;
   vec3 c = ownerPattern(vId, vWorld, uTime, px);
-  c = mix(c, vec3(1.0), 0.42);
-  // A slightly darker core line keeps trails readable on any background.
-  c = mix(c, palRow(vId, 0).rgb, band(abs(d + vRad), 0.08, px) * 0.35);
+  // Soft body, bright core, so the ribbon reads as one continuous stroke.
+  c = mix(c, vec3(1.0), 0.34 + hot * 0.28);
+  float along = abs(d + vRad * 0.15);
+  c = mix(c, vec3(1.0), band(along, 0.07 + hot * 0.04, px) * (0.45 + hot * 0.4));
+  c = mix(c, palRow(vId, 0).rgb, band(abs(d), 0.045, px) * 0.25);
   outColor = vec4(c * alpha, alpha);
 }
 `;

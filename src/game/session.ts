@@ -9,20 +9,45 @@ import type { MapSpec } from '../sim/maps';
 import { World, type AbilityId, type Loadout, type Player, type WorldEvent } from '../sim/world';
 import { CameraRig } from './camera';
 import type { Input } from './input';
+import { applySnapshot, type NetSnapshot } from './netstate';
 
-export type Mode = 'classic' | 'arena' | 'conquest' | 'attract';
+export type Mode = 'classic' | 'arena' | 'conquest' | 'attract' | 'free' | 'party' | 'ranked';
+
+export interface RemoteSeat {
+  name: string;
+  team: number;
+  charId: string;
+  key: string;
+}
 
 export interface MatchConfig {
   mode: Mode;
   map: MapSpec;
   bots: number;
   difficulty: Difficulty[];
-  /** Arena: match length in seconds. */
+  /** Arena / timed modes: match length in seconds. */
   duration?: number;
   /** Conquest: share needed to win. */
   goal?: number;
+  /** Free play, party, ranked: share of the whole map that ends it. */
+  winShare?: number;
   boss?: { name: string; charId: string };
   levelId?: string;
+  /** Bring the local player back after a cut. */
+  respawnYou?: boolean;
+  /** Replace dead bots. Defaults on, so older modes keep their lobbies full. */
+  respawnBots?: boolean;
+  /** Two sides. Allies share a team id and cannot cut each other. */
+  teams?: boolean;
+  remotes?: RemoteSeat[];
+  /** Local player's team in a party match. */
+  youTeam?: number;
+  /** Render a host snapshot. The guest does not step the simulation. */
+  observe?: boolean;
+  /** Name shown on the leaderboard for the local player. */
+  youName?: string;
+  /** Ability button when the local player is not spawned yet (a party guest). */
+  ability?: AbilityId | null;
 }
 
 export interface MatchResult {
@@ -82,7 +107,9 @@ export class Session {
   private acc = 0;
   private alpha = 1;
   private floats: FloatText[] = [];
-  private respawns: number[] = [];
+  private respawns: { at: number; team: number }[] = [];
+  private remoteWaits: { at: number; seat: RemoteSeat }[] = [];
+  private guestAlpha = 1;
   private usedNames = new Set<string>();
   private attractTarget: Player | null = null;
   private attractSwitch = 0;
@@ -95,9 +122,23 @@ export class Session {
     private onEnd: (r: MatchResult) => void = () => {},
   ) {
     this.world = new World(cfg.map);
-    if (cfg.boss) this.spawnBoss();
-    for (let i = 0; i < cfg.bots; i++) this.spawnBot();
-    if (loadout) this.spawnYou();
+    if (!cfg.observe) {
+      if (cfg.boss) this.spawnBoss();
+      if (cfg.mode === 'party') {
+        if (loadout) {
+          this.spawnYou();
+          if (this.you) this.you.team = cfg.youTeam ?? 1;
+        }
+        for (const seat of cfg.remotes ?? []) this.spawnRemote(seat);
+        const allies = (this.you && this.you.team === 1 ? 1 : 0) + (cfg.remotes ?? []).filter((r) => r.team === 1).length;
+        const enemies = (cfg.remotes ?? []).filter((r) => r.team === 2).length;
+        for (let i = allies; i < 3; i++) this.spawnBot(1);
+        for (let i = enemies; i < 3; i++) this.spawnBot(2);
+      } else {
+        for (let i = 0; i < cfg.bots; i++) this.spawnBot();
+        if (loadout) this.spawnYou();
+      }
+    }
     const focus = this.you ?? this.world.players[0];
     if (focus) this.cam.snap(focus.x, focus.y);
     this.cam.zoom = 18;
@@ -115,19 +156,36 @@ export class Session {
     return r.pick(BOT_NAMES) + r.int(2, 99);
   }
 
-  private spawnBot(): Player | null {
+  private spawnBot(team = 0): Player | null {
     const r = this.world.rng;
     const char = r.pick(CHARACTERS);
+    const ranked = this.cfg.mode === 'ranked';
     const loadout: Loadout = {
       charId: char.id,
       ability: r.chance(0.8) ? r.pick(ABILITIES) : null,
       abilityPower: 1,
-      cooldownMul: 1.15,
-      startRadius: r.range(3, 4.2),
+      cooldownMul: ranked ? 1 : 1.15,
+      startRadius: ranked ? 3.5 : r.range(3, 4.2),
     };
     const p = this.world.addPlayer(this.botName(), true, loadout);
     if (!p) return null;
+    p.team = team;
     p.controller = makeBotController(rollPersonality(this.world, r.pick(this.cfg.difficulty)));
+    return p;
+  }
+
+  private spawnRemote(seat: RemoteSeat): Player | null {
+    const loadout: Loadout = {
+      charId: CHAR_BY_ID[seat.charId] ? seat.charId : 'pip',
+      ability: 'dash',
+      abilityPower: 1,
+      cooldownMul: 1,
+      startRadius: 3.5,
+    };
+    const p = this.world.addPlayer(seat.name, false, loadout);
+    if (!p) return null;
+    p.team = seat.team;
+    p.netKey = seat.key;
     return p;
   }
 
@@ -146,7 +204,7 @@ export class Session {
   private spawnYou(): void {
     if (!this.loadout) return;
     if (this.you && !this.you.alive) this.world.reap(this.you);
-    const p = this.world.addPlayer('You', false, this.loadout);
+    const p = this.world.addPlayer(this.cfg.youName || 'You', false, this.loadout);
     if (!p) return;
     this.you = p;
     this.respawnIn = null;
@@ -161,12 +219,72 @@ export class Session {
   /** Territory ranking of living players. */
   ranking(): Player[] {
     const w = this.world;
-    return w.players.filter((p) => p.alive).sort((a, b) => w.cells(b) - w.cells(a));
+    return w.players.filter((p) => p.alive).sort((a, b) => w.cells(b) - w.cells(a) || a.id - b.id);
+  }
+
+  /** Living players by land, then the players who have already been cut. */
+  standings(): Player[] {
+    const w = this.world;
+    const dead = w.players.filter((p) => !p.alive).sort((a, b) => b.deathTime - a.deathTime);
+    return [...this.ranking(), ...dead];
+  }
+
+  teamShare(team: number): number {
+    if (!team) return 0;
+    let n = 0;
+    for (const p of this.world.players) if (p.alive && p.team === team) n += this.world.cells(p);
+    return n / this.world.grid.playable;
+  }
+
+  /** Point a remote human along the angle their phone sent. */
+  setRemoteAngle(key: string, angle: number | null): void {
+    if (angle === null) return;
+    const p = this.world.players.find((q) => q.netKey === key && q.alive);
+    if (p) p.targetAngle = angle;
+  }
+
+  remoteAbility(key: string): void {
+    const p = this.world.players.find((q) => q.netKey === key && q.alive);
+    if (p) this.world.useAbility(p);
+  }
+
+  /** Guest: adopt a host snapshot and keep the camera on your character. */
+  applyNet(snap: NetSnapshot, youKey: string): void {
+    applySnapshot(this.world, snap, this.alpha);
+    const you = this.world.players.find((p) => p.netKey === youKey);
+    if (you) this.you = you;
+    this.elapsed = snap.t;
+    if (you && you.alive) {
+      const share = this.cfg.teams ? this.teamShare(you.team) : this.world.share(you);
+      if (share > this.bestShare) this.bestShare = share;
+      const rank = this.ranking().indexOf(you) + 1;
+      if (rank > 0 && rank < this.bestRank) this.bestRank = rank;
+    }
+    this.guestAlpha = 0;
+    this.alpha = 0;
+    if (snap.over) this.forceFinish();
+  }
+
+  /** End from the current board. Used when a host tells guests the match is over. */
+  forceFinish(): void {
+    if (this.over || !this.you) return;
+    const you = this.you;
+    const youLead = this.cfg.teams
+      ? this.teamShare(you.team) > this.teamShare(you.team === 1 ? 2 : 1)
+      : this.ranking()[0] === you;
+    this.finish(youLead);
   }
 
   update(frameDt: number, input: Input | null, minSide: number): void {
     if (this.paused) return;
     const dt = Math.min(frameDt, 0.1);
+    if (this.cfg.observe) {
+      this.guestAlpha = Math.min(1, this.guestAlpha + dt / 0.066);
+      this.alpha = this.guestAlpha;
+      this.particles.update(dt);
+      this.updateCamera(dt, minSide);
+      return;
+    }
     this.acc += dt;
     let steps = 0;
     while (this.acc >= DT && steps < 6) {
@@ -198,9 +316,13 @@ export class Session {
 
     // Backfill bots.
     const now = w.time;
-    this.respawns = this.respawns.filter((t) => {
-      if (t > now) return true;
-      return !this.spawnBot();
+    this.respawns = this.respawns.filter((job) => {
+      if (job.at > now) return true;
+      return !this.spawnBot(job.team);
+    });
+    this.remoteWaits = this.remoteWaits.filter((w) => {
+      if (w.at > now) return true;
+      return !this.spawnRemote(w.seat);
     });
 
     if (you && you.alive) {
@@ -240,7 +362,7 @@ export class Session {
     let best = Infinity;
     const pts = you.trailPts;
     for (const o of this.world.players) {
-      if (o === you || !o.alive) continue;
+      if (o === you || !o.alive || this.world.allied(you, o)) continue;
       if (Math.hypot(o.x - you.x, o.y - you.y) > 40) continue;
       for (let k = 0; k < pts.length; k += 4) {
         best = Math.min(best, Math.hypot(o.x - pts[k], o.y - pts[k + 1]));
@@ -285,7 +407,7 @@ export class Session {
         if (e.reason === 'self') text = `${v.name} tripped over their own trail`;
         else if (e.reason === 'wiped') text = `${killer?.name ?? '?'} swallowed ${v.name}`;
         else if (e.reason === 'head') text = `${killer?.name ?? '?'} bumped out ${v.name}`;
-        else text = `${killer?.name ?? '?'} cut ${v.name}`;
+        else text = `${killer?.name ?? '?'} took ${v.name}'s turf`;
         const involvesYou = v === you || killer === you;
         this.feed.push({ text, color: CHAR_BY_ID[(killer ?? v).loadout.charId].c1, you: involvesYou, t: performance.now() / 1000 });
         if (this.feed.length > 5) this.feed.shift();
@@ -295,7 +417,11 @@ export class Session {
           sfx.kill();
           haptic.medium();
           this.cam.shake(0.35);
-          this.float(e.x, e.y, v.tag === 'boss' ? 'BOSS DOWN!' : 'ELIMINATED', '#ffffff', true);
+          this.float(e.x, e.y, v.tag === 'boss' ? 'BOSS DOWN!' : 'TURF STOLEN', '#ffffff', true);
+          if (e.taken > 0) {
+            const gained = (e.taken / w.grid.playable) * 100;
+            this.float(e.x, e.y - 1.4, `+${gained < 10 ? gained.toFixed(1) : Math.round(gained)}%`, '#ffd23f', gained > 4);
+          }
         }
         if (v === you) {
           sfx.death();
@@ -303,7 +429,7 @@ export class Session {
           this.cam.shake(0.8);
           this.youDiedAt = w.time;
           this.lastKiller = e.reason === 'self' ? 'your own trail' : killer?.name ?? 'the unknown';
-          if (this.cfg.mode === 'arena' && !this.over) this.respawnIn = 2.2;
+          if ((this.cfg.mode === 'arena' || this.cfg.respawnYou) && !this.over) this.respawnIn = 2.2;
         }
         if (v.isBot) {
           if (v.tag === 'boss') {
@@ -311,9 +437,16 @@ export class Session {
               this.boss = null;
               this.respawnBoss();
             }
-          } else {
-            this.respawns.push(w.time + w.rng.range(1.2, 3.5));
+            const vv = v;
+            setTimeout(() => this.world.reap(vv), 0);
+          } else if (this.cfg.respawnBots !== false) {
+            this.respawns.push({ at: w.time + w.rng.range(1.2, 3.5), team: v.team });
+            const vv = v;
+            setTimeout(() => this.world.reap(vv), 0);
           }
+        } else if (v !== you && this.cfg.respawnYou && !this.over) {
+          const seat = { name: v.name, team: v.team, charId: v.loadout.charId, key: v.netKey };
+          this.remoteWaits.push({ at: w.time + 2.2, seat });
           const vv = v;
           setTimeout(() => this.world.reap(vv), 0);
         }
@@ -361,15 +494,15 @@ export class Session {
     if (this.over) return;
     this.over = true;
     const w = this.world;
-    const rankList = this.ranking();
+    const rankList = this.standings();
     const you = this.you;
-    const rank = you && you.alive ? rankList.indexOf(you) + 1 : this.bestRank === 999 ? rankList.length + 1 : this.bestRank;
+    const rank = you ? rankList.indexOf(you) + 1 : this.bestRank === 999 ? rankList.length : this.bestRank;
     this.result = {
       mode: this.cfg.mode,
       won,
       rank: Math.max(1, rank),
       bestRank: Math.min(this.bestRank, Math.max(1, rank)),
-      players: rankList.length + (you && !you.alive ? 1 : 0),
+      players: Math.max(1, rankList.length),
       bestShare: this.bestShare,
       finalShare: you && you.alive ? w.share(you) : 0,
       kills: this.kills,
@@ -408,6 +541,22 @@ export class Session {
       else if (cfg.boss) {
         if (this.boss && !this.boss.alive && this.boss.deathTime > 0 && this.kills > 0) this.finish(true);
       } else if (this.world.share(you) >= (cfg.goal ?? 0.25)) this.finish(true);
+    } else if (cfg.mode === 'free' || cfg.mode === 'party' || cfg.mode === 'ranked') {
+      const winShare = cfg.winShare ?? 0.995;
+      const youShare = cfg.teams ? this.teamShare(you.team) : you.alive ? this.world.share(you) : 0;
+      let best = youShare;
+      let youLead = false;
+      if (cfg.teams) {
+        const other = this.teamShare(you.team === 1 ? 2 : 1);
+        best = Math.max(youShare, other);
+        youLead = youShare > other;
+      } else {
+        const top = this.ranking()[0];
+        best = top ? this.world.share(top) : 0;
+        youLead = !!top && top === you;
+      }
+      if (best >= winShare) this.finish(youLead);
+      else if (cfg.duration && this.elapsed >= cfg.duration) this.finish(youLead);
     }
   }
 
@@ -419,6 +568,9 @@ export class Session {
   private updateCamera(dt: number, minSide: number): void {
     const w = this.world;
     let target: Player | null = this.you && this.you.alive ? this.you : null;
+    if (!target && (this.cfg.mode === 'free' || this.cfg.mode === 'party' || this.cfg.mode === 'ranked')) {
+      target = this.ranking()[0] ?? null;
+    }
     if (!target && this.cfg.mode === 'attract') {
       this.attractSwitch -= dt;
       if (!this.attractTarget || !this.attractTarget.alive || this.attractSwitch <= 0) {
@@ -459,7 +611,7 @@ export class Session {
     const fs = Math.max(10, Math.min(14, z * 0.8));
     ctx.font = `700 ${fs}px "Baloo 2", ui-rounded, system-ui, sans-serif`;
     for (const p of this.world.players) {
-      if (!p.alive) continue;
+      if (!p.alive || this.cfg.mode === 'attract') continue;
       const lx = p.px + (p.x - p.px) * this.alpha;
       const ly = p.py + (p.y - p.py) * this.alpha;
       const [sx, sy] = toS(lx, ly);

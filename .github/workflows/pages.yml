@@ -5,6 +5,7 @@ on:
     branches:
       - claude/amazing-wright-iojdzx
       - cursor/iphone-play-2f2f
+      - cursor/modes-hud-2f2f
   workflow_dispatch:
 
 permissions:

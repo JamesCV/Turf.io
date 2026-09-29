@@ -24,11 +24,11 @@ export class CameraRig implements Camera {
    * @param minSide shorter screen side in CSS px
    */
   update(dt: number, tx: number, ty: number, viewCells: number, minSide: number): void {
-    const k = 1 - Math.exp(-dt * 5.5);
+    const k = 1 - Math.exp(-dt * 11);
     this.x += (tx - this.x) * k;
     this.y += (ty - this.y) * k;
     const targetZoom = minSide / viewCells;
-    this.zoom += (targetZoom - this.zoom) * (1 - Math.exp(-dt * 2.5));
+    this.zoom += (targetZoom - this.zoom) * (1 - Math.exp(-dt * 4));
     this.shakeT += dt;
     const amp = this.shakeAmp * Math.exp(-this.shakeT * 9);
     if (amp < 0.01) this.shakeAmp = 0;

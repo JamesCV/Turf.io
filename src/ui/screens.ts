@@ -15,14 +15,16 @@ import {
 import type { Rewards } from '../meta/rewards';
 import { sfx } from '../platform/audio';
 import { haptic, setHapticsEnabled } from '../platform/haptics';
+import { tierFor } from '../meta/elo';
 import type { AbilityId } from '../sim/world';
 import { fmt, h, pct, starsHTML } from './dom';
 
 export interface AppApi {
   card(charId: string): string;
   show(screen: ScreenId): void;
-  playClassic(): void;
-  playArena(): void;
+  playFree(): void;
+  playParty(): void;
+  playRanked(): void;
   playLevel(id: string): void;
   toast(text: string): void;
 }
@@ -125,12 +127,20 @@ export function menuScreen(app: AppApi): HTMLElement {
         h('div', { class: 'hero-name' }, cur.name),
         h('div', { class: 'hero-tag' }, `${PATTERN_NAMES[cur.pattern]} turf · ${ABILITY_INFO[profile.ability].icon} ${ABILITY_INFO[profile.ability].name}`),
       ),
-      h('div', { class: 'menu-actions' },
-        h('button', { class: 'btn big green', onClick: click(() => app.playClassic()) }, 'PLAY'),
-        h('div', { class: 'row' },
-          h('button', { class: 'btn orange', onClick: click(() => app.playArena()) }, 'Arena', h('span', { class: 'sub' }, '3 min showdown')),
-          h('button', { class: 'btn purple', onClick: click(() => app.show('conquest')) }, 'Conquest', h('span', { class: 'sub' }, `★ ${stars} / ${REGIONS.length * 15}`)),
+      h('div', { class: 'modes' },
+        h('button', { class: 'mode free', onClick: click(() => app.playFree()) },
+          h('span', { class: 'mark' }, '◎'),
+          h('span', null, h('b', null, 'Free Play'), h('small', null, 'Open lobby · own the map')),
         ),
+        h('button', { class: 'mode party', onClick: click(() => app.playParty()) },
+          h('span', { class: 'mark' }, '3v3'),
+          h('span', null, h('b', null, 'Party'), h('small', null, 'Friends · two teams of three')),
+        ),
+        h('button', { class: 'mode ranked', onClick: click(() => app.playRanked()) },
+          h('span', { class: 'mark' }, '★'),
+          h('span', null, h('b', null, 'Ranked'), h('small', null, `${tierFor(profile.elo).name} · ${profile.elo}`)),
+        ),
+        h('button', { class: 'text-link', onClick: click(() => app.show('conquest')) }, `Campaign · ★ ${stars}`),
       ),
     ),
     h('div', { class: 'navbar' },
@@ -390,9 +400,9 @@ export function settingsScreen(app: AppApi, onChange: () => void): HTMLElement {
       }),
       h('div', { style: 'margin-top:14px;color:#7b7894;font-weight:600;font-size:14px;line-height:1.4' },
         h('b', { style: 'color:#1c1a2e' }, 'How to play'), h('br'),
-        'Drag anywhere to steer. Leave your land to draw a trail, then return to claim everything inside. ',
-        'If anyone touches your trail before you get home, you’re out — so cut theirs first!', h('br'), h('br'),
-        `Games played: ${profile.stats.games} · Total takedowns: ${profile.stats.kills} · Best Classic: ${pct(profile.best.classicShare)}`,
+        'Drag anywhere to steer. Leave your land to draw a trail, then loop home to claim the inside. ',
+        'Cross a rival who is out on a run and their whole territory becomes yours. Own the map — 100% — to win.', h('br'), h('br'),
+        `Games played: ${profile.stats.games} · Cuts: ${profile.stats.kills} · Best land: ${pct(profile.best.classicShare)} · Ranked: ${tierFor(profile.elo).name} ${profile.elo}`,
       ),
       resetBtn,
       h('div', { style: 'margin-top:12px;color:#b0adc4;font-size:12px;font-weight:600' }, 'Turf.io v0.1 · No ads. No pay-to-win.'),
@@ -418,6 +428,11 @@ export function resultsModal(
     win = r.won;
     title = r.won ? 'Victory!' : r.finalShare > 0 ? `#${r.rank} place` : 'Time!';
     sub = r.won ? 'You ruled the arena' : 'Most land at the buzzer wins';
+  } else if (r.mode === 'free' || r.mode === 'party' || r.mode === 'ranked') {
+    win = r.won;
+    title = r.won ? 'Victory' : `#${r.rank}`;
+    sub = r.mode === 'party' ? '3v3 · first team to own the map' : r.mode === 'ranked' ? 'Ranked · own the map' : 'Open lobby · own the map';
+    if (r.killedBy && r.mode === 'ranked') sub = `Cut down by ${r.killedBy}`;
   } else {
     const lvl = r.levelId ? LEVEL_BY_ID[r.levelId] : null;
     win = r.won;
@@ -452,10 +467,14 @@ export function resultsModal(
       sub ? h('div', { class: 'sub' }, sub) : null,
       starsEl,
       hint,
+      rw.eloFrom !== undefined
+        ? h('div', { class: 'sub', style: `color:${(rw.eloDelta ?? 0) >= 0 ? '#10c98f' : '#ff4d6d'}` },
+          `${tierFor(rw.eloTo ?? rw.eloFrom).name}  ${rw.eloFrom} → ${rw.eloTo}  (${(rw.eloDelta ?? 0) >= 0 ? '+' : ''}${rw.eloDelta})`)
+        : null,
       h('div', { class: 'statgrid' },
         h('div', null, h('b', null, pct(r.bestShare)), h('small', null, 'Best land')),
-        h('div', null, h('b', null, r.kills), h('small', null, 'Takedowns')),
-        h('div', null, h('b', null, r.mode === 'arena' ? `#${r.rank}` : `${Math.floor(r.time / 60)}:${String(Math.floor(r.time % 60)).padStart(2, '0')}`), h('small', null, r.mode === 'arena' ? 'Place' : r.mode === 'conquest' ? 'Time' : 'Survived')),
+        h('div', null, h('b', null, r.kills), h('small', null, 'Cuts')),
+        h('div', null, h('b', null, r.mode === 'conquest' || r.mode === 'classic' ? `${Math.floor(r.time / 60)}:${String(Math.floor(r.time % 60)).padStart(2, '0')}` : `#${r.rank}`), h('small', null, r.mode === 'conquest' ? 'Time' : r.mode === 'classic' ? 'Survived' : 'Place')),
       ),
       rw.newBest ? h('div', { class: 'sub', style: 'color:#10c98f' }, '🏆 New personal best!') : null,
       rw.levelsGained ? h('div', { class: 'sub', style: 'color:#7b5cff' }, `Level up! You're now level ${profile.level}`) : null,
@@ -479,6 +498,91 @@ export function pauseModal(actions: { resume: () => void; quit: () => void }): H
         h('button', { class: 'btn green', onClick: click(actions.resume) }, 'Resume'),
         h('button', { class: 'btn ghost', onClick: click(actions.quit) }, 'Quit match'),
       ),
+    ),
+  );
+}
+
+export function finderScreen(title: string, detail: string, cancel: () => void): HTMLElement {
+  return h('div', { class: 'screen solid' },
+    h('div', { class: 'finder' },
+      h('div', { class: 'pulse' }),
+      h('h1', null, title),
+      h('p', null, detail),
+      h('div', { style: 'height:18px' }),
+      h('button', { class: 'btn ghost', onClick: click(cancel) }, 'Cancel'),
+    ),
+  );
+}
+
+export interface PartySeatView {
+  name: string;
+  team: number;
+  self: boolean;
+}
+
+export function partyScreen(opts: {
+  phase: 'pick' | 'room';
+  code: string;
+  status: string;
+  seats: PartySeatView[];
+  host: boolean;
+  onHost: () => void;
+  onJoin: (code: string) => void;
+  onStart: () => void;
+  onLeave: () => void;
+}): HTMLElement {
+  if (opts.phase === 'pick') {
+    const field = h('input', {
+      class: 'field',
+      maxLength: 4,
+      placeholder: 'CODE',
+      autocomplete: 'off',
+      autocapitalize: 'characters',
+      enterkeyhint: 'go',
+    }) as HTMLInputElement;
+    const go = () => opts.onJoin(field.value);
+    field.addEventListener('keydown', (e) => {
+      if ((e as KeyboardEvent).key === 'Enter') go();
+    });
+    return h('div', { class: 'screen solid' },
+      headerLike('Party', opts.onLeave),
+      h('div', { class: 'scroll' },
+        h('p', { style: 'color:rgba(255,255,255,0.78);font-weight:700;text-align:center' },
+          'Play 3v3 with friends. Each side shares land, and the first team to own the map wins.'),
+        h('button', { class: 'btn big green', style: 'width:100%;margin-top:8px', onClick: click(opts.onHost) }, 'Create party'),
+        h('div', { class: 'section-title' }, 'Join a code'),
+        h('div', { class: 'row', style: 'justify-content:center' },
+          field,
+          h('button', { class: 'btn blue', onClick: click(go) }, 'Join'),
+        ),
+      ),
+    );
+  }
+  const col = (team: number, title: string) => {
+    const members = opts.seats.filter((s) => s.team === team);
+    const open = Math.max(0, 3 - members.length);
+    return h('div', { class: 'col' },
+      h('h3', null, title),
+      ...members.map((s) => h('div', { class: 'seat' + (s.self ? ' me' : '') }, s.self ? `${s.name} · you` : s.name)),
+      ...Array.from({ length: open }, () => h('div', { class: 'seat', style: 'opacity:0.4' }, 'Open seat')),
+    );
+  };
+  return h('div', { class: 'screen solid' },
+    headerLike('Party', opts.onLeave),
+    h('div', { class: 'party-code' }, opts.code || '----'),
+    h('p', { style: 'text-align:center;color:rgba(255,255,255,0.75);font-weight:700;margin-top:0' }, opts.status || ' '),
+    h('div', { class: 'teams' }, col(1, 'Team A'), col(2, 'Team B')),
+    opts.host
+      ? h('button', { class: 'btn big green', style: 'width:100%;margin-top:16px', onClick: click(opts.onStart) }, 'Fill & start')
+      : h('p', { style: 'text-align:center;color:#fff;font-weight:800' }, 'Waiting for the host to start'),
+  );
+}
+
+function headerLike(title: string, back: () => void): HTMLElement {
+  return h('div', { class: 'topbar' },
+    h('div', { class: 'row' },
+      h('button', { class: 'icon-btn', onClick: click(back), 'aria-label': 'Back' }, '‹'),
+      h('div', { class: 'title' }, title),
     ),
   );
 }

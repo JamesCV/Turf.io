@@ -2,10 +2,10 @@ import { EMPTY, Grid, MAX_ID, ROCK, VOID, type Rect } from './grid';
 import { buildMap, type MapSpec } from './maps';
 import { Rng } from './rng';
 
-export const BASE_SPEED = 9; // cells per second
-export const TURN_RATE = 7.2; // radians per second
+export const BASE_SPEED = 10.2; // cells per second
+export const TURN_RATE = 11.5; // radians per second — a flick shows up within a couple of frames
 const RIPPLE_SPEED = 70; // cells per second the capture flash travels
-const TRAIL_POINT_SPACING = 0.4;
+const TRAIL_POINT_SPACING = 0.2;
 const SELF_HIT_GRACE = 3; // ignore the newest trail cells when checking self-hits
 const HEAD_HIT_DIST = 0.9;
 const SPAWN_SHIELD = 2;
@@ -66,6 +66,10 @@ export class Player {
   brain: unknown = null;
   /** Arbitrary tag for game-mode rules (e.g. "boss"). */
   tag = '';
+  /** 0 = free-for-all. Matching non-zero teams are allies. */
+  team = 0;
+  /** Party seat key for a remote human. Empty for local players and bots. */
+  netKey = '';
 
   constructor(
     readonly id: number,
@@ -79,7 +83,7 @@ export type DeathReason = 'trail' | 'self' | 'head' | 'wiped';
 
 export type WorldEvent =
   | { type: 'capture'; p: Player; cells: number; x: number; y: number }
-  | { type: 'kill'; victim: Player; killer: Player | null; reason: DeathReason; x: number; y: number }
+  | { type: 'kill'; victim: Player; killer: Player | null; reason: DeathReason; x: number; y: number; taken: number }
   | { type: 'spawn'; p: Player }
   | { type: 'ability'; p: Player; ability: AbilityId };
 
@@ -220,6 +224,12 @@ export class World {
     return this.time < p.shieldUntil;
   }
 
+  /** Allies share a non-zero team and never cut each other. */
+  allied(a: Player | null | undefined, b: Player | null | undefined): boolean {
+    if (!a || !b) return false;
+    return a.team !== 0 && a.team === b.team;
+  }
+
   speedOf(p: Player): number {
     let s = BASE_SPEED;
     if (this.time < p.dashUntil) s *= 1.65;
@@ -351,7 +361,9 @@ export class World {
         }
       } else {
         const other = this.byId[t];
-        if (other && other.alive && !this.shielded(other)) this.kill(other, p, 'trail');
+        // Crossing a trail outside its owner's land (they're attacking) kills them
+        // and hands you everything they owned. Allies pass through.
+        if (other && other.alive && !this.allied(p, other) && !this.shielded(other)) this.kill(other, p, 'trail');
       }
     }
 
@@ -366,8 +378,12 @@ export class World {
         p.trailPts.length = 0;
         p.trailPts.push(p.x, p.y);
       }
-      if (g.trail[i] === 0) g.trail[i] = p.id;
-      p.trail.push(i);
+      const trailOwner = g.trail[i] ? this.byId[g.trail[i]] : null;
+      const allyTrail = this.allied(p, trailOwner);
+      if (!allyTrail) {
+        if (g.trail[i] === 0) g.trail[i] = p.id;
+        p.trail.push(i);
+      }
       if (p.trailPts.length === 0) p.trailPts.push(wx, wy);
     }
     return true;
@@ -411,23 +427,70 @@ export class World {
     const g = this.grid;
     victim.alive = false;
     victim.deathTime = this.time;
-    for (const c of victim.trail) {
-      if (g.trail[c] === victim.id) g.trail[c] = 0;
-    }
-    victim.trail.length = 0;
-    victim.trailPts.length = 0;
-    const b = victim.bbox;
-    for (let y = Math.max(0, b.y0); y < Math.min(g.h, b.y1); y++) {
-      for (let x = Math.max(0, b.x0); x < Math.min(g.w, b.x1); x++) {
-        const i = y * g.w + x;
-        if (g.owner[i] === victim.id) {
-          g.setOwner(i, EMPTY);
-          g.capTime[i] = -100;
+    const steal = reason === 'trail' && !!killer && killer !== victim && killer.alive;
+    let taken = 0;
+    if (steal && killer) taken = this.transferLand(victim, killer);
+    else {
+      for (const c of victim.trail) {
+        if (g.trail[c] === victim.id) g.trail[c] = 0;
+      }
+      const b = victim.bbox;
+      for (let y = Math.max(0, b.y0); y < Math.min(g.h, b.y1); y++) {
+        for (let x = Math.max(0, b.x0); x < Math.min(g.w, b.x1); x++) {
+          const i = y * g.w + x;
+          if (g.owner[i] === victim.id) {
+            g.setOwner(i, EMPTY);
+            g.capTime[i] = -100;
+          }
         }
       }
     }
+    victim.trail.length = 0;
+    victim.trailPts.length = 0;
     if (killer && killer !== victim) killer.kills++;
-    this.events.push({ type: 'kill', victim, killer, reason, x: victim.x, y: victim.y });
+    this.events.push({ type: 'kill', victim, killer, reason, x: victim.x, y: victim.y, taken });
+  }
+
+  /**
+   * The cutter inherits the victim's land, plus the attacking trail they were
+   * drawing. The ripple starts at the cut so the steal reads instantly.
+   */
+  private transferLand(from: Player, to: Player): number {
+    const g = this.grid;
+    const ax = from.x;
+    const ay = from.y;
+    let n = 0;
+    const give = (i: number) => {
+      const o = g.owner[i];
+      if (o === VOID || o === ROCK || o === to.id) {
+        if (g.trail[i] === from.id) g.trail[i] = 0;
+        return;
+      }
+      if (o !== from.id && o !== EMPTY) return;
+      if (o === EMPTY && g.trail[i] !== from.id) return;
+      g.trail[i] = 0;
+      g.setOwner(i, to.id);
+      const x = i % g.w;
+      const y = (i - x) / g.w;
+      g.capTime[i] = this.time + Math.hypot(x - ax, y - ay) / RIPPLE_SPEED;
+      const box = to.bbox;
+      if (x < box.x0) box.x0 = x;
+      if (y < box.y0) box.y0 = y;
+      if (x + 1 > box.x1) box.x1 = x + 1;
+      if (y + 1 > box.y1) box.y1 = y + 1;
+      n++;
+    };
+    const b = from.bbox;
+    for (let y = Math.max(0, b.y0); y < Math.min(g.h, b.y1); y++) {
+      for (let x = Math.max(0, b.x0); x < Math.min(g.w, b.x1); x++) {
+        const i = y * g.w + x;
+        if (g.owner[i] === from.id) give(i);
+      }
+    }
+    for (const c of from.trail) {
+      if (g.trail[c] === from.id || g.owner[c] === from.id) give(c);
+    }
+    return n;
   }
 
   private headOnCollisions(): void {
@@ -437,7 +500,7 @@ export class World {
       if (!A.alive) continue;
       for (let b = a + 1; b < ps.length; b++) {
         const B = ps[b];
-        if (!B.alive) continue;
+        if (!B.alive || this.allied(A, B)) continue;
         const dx = A.x - B.x;
         const dy = A.y - B.y;
         if (dx * dx + dy * dy > HEAD_HIT_DIST * HEAD_HIT_DIST) continue;

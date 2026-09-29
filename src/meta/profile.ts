@@ -20,6 +20,10 @@ export interface Profile {
   stars: Record<string, number>;
   best: { classicShare: number; classicKills: number; arenaWins: number };
   stats: { games: number; kills: number };
+  /** Ranked rating. 1000 is the floor everyone starts on. */
+  elo: number;
+  eloBest: number;
+  eloGames: number;
   settings: { sound: boolean; haptics: boolean };
   daily: { day: string; streak: number };
 }
@@ -42,6 +46,9 @@ export function defaultProfile(): Profile {
     stars: {},
     best: { classicShare: 0, classicKills: 0, arenaWins: 0 },
     stats: { games: 0, kills: 0 },
+    elo: 1000,
+    eloBest: 1000,
+    eloGames: 0,
     settings: { sound: true, haptics: true },
     daily: { day: '', streak: 0 },
   };
@@ -59,6 +66,9 @@ export async function loadProfile(): Promise<Profile> {
       upgrades: { ...d.upgrades, ...saved.upgrades },
       best: { ...d.best, ...saved.best },
       stats: { ...d.stats, ...saved.stats },
+      elo: saved.elo ?? d.elo,
+      eloBest: saved.eloBest ?? d.eloBest,
+      eloGames: saved.eloGames ?? d.eloGames,
       settings: { ...d.settings, ...saved.settings },
       daily: { ...d.daily, ...saved.daily },
     } as Profile;
@@ -116,6 +126,17 @@ export function currentLoadout(): Loadout {
     abilityPower: 1 + u.power * 0.1,
     cooldownMul: 1 - u.cooldown * 0.07,
     startRadius: startRadius(u.start),
+  };
+}
+
+/** Ranked ignores upgrades so the rating measures the player. */
+export function rankedLoadout(): Loadout {
+  return {
+    charId: profile.charId,
+    ability: profile.ability,
+    abilityPower: 1,
+    cooldownMul: 1,
+    startRadius: 3.5,
   };
 }
 

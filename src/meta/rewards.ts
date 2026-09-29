@@ -1,5 +1,6 @@
 import { LEVEL_BY_ID, starsFor } from '../content/levels';
 import type { MatchResult } from '../game/session';
+import { eloDelta } from './elo';
 import { addXp, coinMultiplier, profile, saveProfile } from './profile';
 
 export interface Rewards {
@@ -11,6 +12,9 @@ export interface Rewards {
   newStars: number;
   firstClear: boolean;
   newBest: boolean;
+  eloFrom?: number;
+  eloTo?: number;
+  eloDelta?: number;
 }
 
 const CLASSIC_RANK_BONUS = [150, 90, 50];
@@ -24,6 +28,9 @@ export function grantRewards(r: MatchResult): Rewards {
   let newStars = 0;
   let firstClear = false;
   let newBest = false;
+  let eloFrom: number | undefined;
+  let eloTo: number | undefined;
+  let eloChange: number | undefined;
   const share = r.bestShare * 100;
 
   if (r.mode === 'classic') {
@@ -38,6 +45,24 @@ export function grantRewards(r: MatchResult): Rewards {
     if (r.won) {
       profile.best.arenaWins++;
       gems += 3;
+    }
+  } else if (r.mode === 'free' || r.mode === 'party' || r.mode === 'ranked') {
+    const placeBonus = [220, 140, 90, 50, 30];
+    coins = 24 + share * 10 + r.kills * 28 + (placeBonus[r.rank - 1] ?? 12);
+    if (r.won) gems += r.mode === 'ranked' ? 4 : 2;
+    if (r.mode === 'ranked') {
+      const from = profile.elo;
+      const delta = eloDelta(from, from, r.rank, r.players, profile.eloGames);
+      profile.elo = Math.max(0, from + delta);
+      profile.eloBest = Math.max(profile.eloBest, profile.elo);
+      profile.eloGames++;
+      eloFrom = from;
+      eloTo = profile.elo;
+      eloChange = delta;
+    }
+    if (r.bestShare > profile.best.classicShare) {
+      profile.best.classicShare = r.bestShare;
+      newBest = true;
     }
   } else if (r.mode === 'conquest' && r.levelId) {
     const lvl = LEVEL_BY_ID[r.levelId];
@@ -64,5 +89,5 @@ export function grantRewards(r: MatchResult): Rewards {
   profile.stats.kills += r.kills;
   const lv = addXp(xp);
   saveProfile();
-  return { coins, gems: gems + lv.gems, xp, levelsGained: lv.levels, stars, newStars, firstClear, newBest };
+  return { coins, gems: gems + lv.gems, xp, levelsGained: lv.levels, stars, newStars, firstClear, newBest, eloFrom, eloTo, eloDelta: eloChange };
 }

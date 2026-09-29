@@ -102,6 +102,7 @@ export class Renderer {
       alpha: false,
       premultipliedAlpha: true,
       powerPreference: 'high-performance',
+      desynchronized: true,
       preserveDrawingBuffer: false,
     });
     if (!gl) throw new Error('WebGL2 is not available on this device.');
@@ -110,7 +111,7 @@ export class Renderer {
     const common = ['uPal', 'uCam', 'uScale', 'uRes', 'uTime'];
     this.terrain = compile(gl, TERRAIN_VS, TERRAIN_FS, [...common, 'uFine', 'uFineOrigin', 'uK', 'uFineSize', 'uCap', 'uGridSize']);
     this.smooth = compile(gl, TERRAIN_VS, SMOOTH_FS, ['uOwn', 'uGridSize', 'uOrigin', 'uK']);
-    this.trail = compile(gl, TRAIL_VS, TRAIL_FS, common);
+    this.trail = compile(gl, TRAIL_VS, TRAIL_FS, [...common, 'uYou']);
     this.head = compile(gl, HEAD_VS, HEAD_FS, [...common, 'uAtlas', 'uAtlasGrid']);
     this.part = compile(gl, PARTICLE_VS, PARTICLE_FS, common);
 
@@ -361,7 +362,7 @@ export class Renderer {
 
     // Trails
     let nt = 0;
-    const pushSeg = (x0: number, y0: number, x1: number, y1: number, id: number) => {
+    const pushSeg = (x0: number, y0: number, x1: number, y1: number, id: number, rad: number) => {
       if (nt * 6 >= this.trailData.length) {
         const bigger = new Float32Array(this.trailData.length * 2);
         bigger.set(this.trailData);
@@ -374,21 +375,32 @@ export class Renderer {
       d[o + 2] = x1;
       d[o + 3] = y1;
       d[o + 4] = id;
-      d[o + 5] = 0.46;
+      d[o + 5] = rad;
       nt++;
     };
     for (const p of world.players) {
       if (!p.alive || p.trailPts.length < 2) continue;
       const pts = p.trailPts;
+      const yours = p.id === f.youId;
+      const rad = yours ? 0.78 : 0.52;
       for (let k = 0; k + 3 < pts.length; k += 2) {
         if (!vis(pts[k], pts[k + 1], 2) && !vis(pts[k + 2], pts[k + 3], 2)) continue;
-        pushSeg(pts[k], pts[k + 1], pts[k + 2], pts[k + 3], p.id);
+        pushSeg(pts[k], pts[k + 1], pts[k + 2], pts[k + 3], p.id, rad);
       }
+      // Neck the ribbon into the body so the stroke starts at the character, not beside it.
       const [hx, hy] = lerp(p);
-      pushSeg(pts[pts.length - 2], pts[pts.length - 1], hx, hy, p.id);
+      const dx = Math.cos(p.angle);
+      const dy = Math.sin(p.angle);
+      const lx = pts[pts.length - 2];
+      const ly = pts[pts.length - 1];
+      const nx = hx - dx * 0.42;
+      const ny = hy - dy * 0.42;
+      pushSeg(lx, ly, nx, ny, p.id, rad);
+      pushSeg(nx, ny, hx + dx * 0.12, hy + dy * 0.12, p.id, yours ? rad * 0.92 : rad);
     }
     if (nt) {
       this.setCommon(this.trail, cam, world.time);
+      gl.uniform1i(this.trail.u.uYou, f.youId);
       gl.bindVertexArray(this.trailVAO);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.trailBuf);
       gl.bufferData(gl.ARRAY_BUFFER, this.trailData.subarray(0, nt * 6), gl.DYNAMIC_DRAW);
