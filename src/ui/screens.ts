@@ -563,7 +563,7 @@ export function partyScreen(opts: {
     const open = Math.max(0, 3 - members.length);
     return h('div', { class: 'col' },
       h('h3', null, title),
-      ...members.map((s) => h('div', { class: 'seat' + (s.self ? ' me' : '') }, s.self ? `${s.name} · you` : s.name)),
+      ...members.map((s) => h('div', { class: 'seat' + (s.self ? ' me' : '') }, s.name)),
       ...Array.from({ length: open }, () => h('div', { class: 'seat', style: 'opacity:0.4' }, 'Open seat')),
     );
   };

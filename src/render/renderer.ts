@@ -104,6 +104,7 @@ export class Renderer {
       powerPreference: 'high-performance',
       desynchronized: true,
       preserveDrawingBuffer: false,
+      stencil: true,
     });
     if (!gl) throw new Error('WebGL2 is not available on this device.');
     this.gl = gl;
@@ -360,7 +361,8 @@ export class Renderer {
 
     const lerp = (p: Player) => [p.px + (p.x - p.px) * alpha, p.py + (p.y - p.py) * alpha];
 
-    // Trails
+    // Trails. Stencil keeps one fragment per pixel so overlapping capsules
+    // stay a single ribbon instead of stacking into ribs.
     let nt = 0;
     const pushSeg = (x0: number, y0: number, x1: number, y1: number, id: number, rad: number) => {
       if (nt * 6 >= this.trailData.length) {
@@ -378,16 +380,15 @@ export class Renderer {
       d[o + 5] = rad;
       nt++;
     };
-    for (const p of world.players) {
-      if (!p.alive || p.trailPts.length < 2) continue;
+    const pushTrail = (p: Player) => {
+      if (!p.alive || p.trailPts.length < 2) return;
       const pts = p.trailPts;
       const yours = p.id === f.youId;
-      const rad = yours ? 0.78 : 0.52;
+      const rad = yours ? 0.72 : 0.5;
       for (let k = 0; k + 3 < pts.length; k += 2) {
         if (!vis(pts[k], pts[k + 1], 2) && !vis(pts[k + 2], pts[k + 3], 2)) continue;
         pushSeg(pts[k], pts[k + 1], pts[k + 2], pts[k + 3], p.id, rad);
       }
-      // Neck the ribbon into the body so the stroke starts at the character, not beside it.
       const [hx, hy] = lerp(p);
       const dx = Math.cos(p.angle);
       const dy = Math.sin(p.angle);
@@ -397,15 +398,29 @@ export class Renderer {
       const ny = hy - dy * 0.42;
       pushSeg(lx, ly, nx, ny, p.id, rad);
       pushSeg(nx, ny, hx + dx * 0.12, hy + dy * 0.12, p.id, yours ? rad * 0.92 : rad);
-    }
-    if (nt) {
+    };
+    const flushTrails = () => {
+      if (!nt) return;
       this.setCommon(this.trail, cam, world.time);
       gl.uniform1i(this.trail.u.uYou, f.youId);
       gl.bindVertexArray(this.trailVAO);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.trailBuf);
       gl.bufferData(gl.ARRAY_BUFFER, this.trailData.subarray(0, nt * 6), gl.DYNAMIC_DRAW);
       gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, nt);
-    }
+      nt = 0;
+    };
+    gl.enable(gl.STENCIL_TEST);
+    gl.stencilMask(0xff);
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+    gl.stencilFunc(gl.NOTEQUAL, 1, 0xff);
+    gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+    for (const p of world.players) if (p.id !== f.youId) pushTrail(p);
+    flushTrails();
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+    const you = world.byId[f.youId];
+    if (you) pushTrail(you);
+    flushTrails();
+    gl.disable(gl.STENCIL_TEST);
 
     // Heads, back to front.
     const heads = world.players.filter((p) => p.alive && vis(p.x, p.y, 3));

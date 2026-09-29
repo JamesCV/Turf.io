@@ -487,15 +487,15 @@ void main() {
   float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
   float d = length(pa - ba * h) - vRad;
   float px = 1.0 / uScale;
-  float alpha = fillSDF(d, px * 1.35);
+  float alpha = fillSDF(d, px * 1.7);
   if (alpha <= 0.0) discard;
   float hot = vId == uYou ? 1.0 : 0.0;
-  vec3 c = ownerPattern(vId, vWorld, uTime, px);
-  // Soft body, bright core, so the ribbon reads as one continuous stroke.
-  c = mix(c, vec3(1.0), 0.34 + hot * 0.28);
-  float along = abs(d + vRad * 0.15);
-  c = mix(c, vec3(1.0), band(along, 0.07 + hot * 0.04, px) * (0.45 + hot * 0.4));
-  c = mix(c, palRow(vId, 0).rgb, band(abs(d), 0.045, px) * 0.25);
+  vec3 c1 = palRow(vId, 0).rgb;
+  vec3 c2 = palRow(vId, 1).rgb;
+  float dist = length(pa - ba * h);
+  float t = clamp(dist / max(vRad, 0.001), 0.0, 1.0);
+  vec3 c = mix(mix(c1, c2, 0.35), c1 * 0.7, smoothstep(0.2, 1.0, t));
+  c = mix(c, vec3(1.0), (1.0 - t) * (0.18 + hot * 0.22));
   outColor = vec4(c * alpha, alpha);
 }
 `;

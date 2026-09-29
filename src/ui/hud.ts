@@ -22,8 +22,9 @@ export class Hud {
   private feed = h('div', { class: 'feed' });
   private abilityBtn: HTMLElement | null = null;
   private cd = h('div', { class: 'cd' });
-  private mini = h('canvas', { width: 180, height: 180 }) as HTMLCanvasElement;
-  private miniTop = h('canvas', { width: 180, height: 180 }) as HTMLCanvasElement;
+  private mini = h('canvas', { width: 256, height: 256 }) as HTMLCanvasElement;
+  private miniTop = h('canvas', { width: 256, height: 256 }) as HTMLCanvasElement;
+  private miniSrc = document.createElement('canvas');
   private msg = h('div', { class: 'center-msg' });
   private slowT = 0;
   private miniT = 0;
@@ -224,33 +225,36 @@ export class Hud {
   private paintMinimap(): void {
     const s = this.s;
     const g = s.world.grid;
-    const ctx = this.mini.getContext('2d')!;
-    const W = this.mini.width;
-    const img = ctx.createImageData(W, W);
+    if (this.miniSrc.width !== g.w || this.miniSrc.height !== g.h) {
+      this.miniSrc.width = g.w;
+      this.miniSrc.height = g.h;
+    }
+    const src = this.miniSrc.getContext('2d')!;
+    const img = src.createImageData(g.w, g.h);
     const colors: Record<number, [number, number, number]> = {};
     for (const p of s.world.players) {
       const [r, gg, b] = hexToRgb(CHAR_BY_ID[p.loadout.charId].c1);
       colors[p.id] = [r * 255, gg * 255, b * 255];
     }
     const d = img.data;
-    for (let y = 0; y < W; y++) {
-      const gy = Math.min(g.h - 1, Math.floor((y / W) * g.h));
-      for (let x = 0; x < W; x++) {
-        const gx = Math.min(g.w - 1, Math.floor((x / W) * g.w));
-        const o = g.owner[gy * g.w + gx];
-        const k = (y * W + x) * 4;
-        if (o === VOID) continue;
-        let c: [number, number, number] = [232, 228, 246];
-        if (o === ROCK) c = [92, 88, 150];
-        else if (o && colors[o]) c = colors[o];
-        const mine = s.you && o === s.you.id;
-        d[k] = mine ? Math.min(255, c[0] + 28) : c[0];
-        d[k + 1] = mine ? Math.min(255, c[1] + 28) : c[1];
-        d[k + 2] = mine ? Math.min(255, c[2] + 28) : c[2];
-        d[k + 3] = 255;
-      }
+    for (let i = 0; i < g.owner.length; i++) {
+      const o = g.owner[i];
+      const k = i * 4;
+      if (o === VOID) continue;
+      let c: [number, number, number] = [236, 232, 248];
+      if (o === ROCK) c = [86, 82, 140];
+      else if (o && colors[o]) c = colors[o];
+      const mine = s.you && o === s.you.id;
+      d[k] = mine ? Math.min(255, c[0] + 36) : c[0];
+      d[k + 1] = mine ? Math.min(255, c[1] + 36) : c[1];
+      d[k + 2] = mine ? Math.min(255, c[2] + 36) : c[2];
+      d[k + 3] = 255;
     }
-    ctx.putImageData(img, 0, 0);
+    src.putImageData(img, 0, 0);
+    const ctx = this.mini.getContext('2d')!;
+    ctx.imageSmoothingEnabled = true;
+    ctx.clearRect(0, 0, this.mini.width, this.mini.height);
+    ctx.drawImage(this.miniSrc, 0, 0, this.mini.width, this.mini.height);
   }
 
   private paintMinimapOverlay(): void {

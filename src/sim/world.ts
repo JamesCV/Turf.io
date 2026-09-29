@@ -5,7 +5,7 @@ import { Rng } from './rng';
 export const BASE_SPEED = 10.2; // cells per second
 export const TURN_RATE = 11.5; // radians per second — a flick shows up within a couple of frames
 const RIPPLE_SPEED = 70; // cells per second the capture flash travels
-const TRAIL_POINT_SPACING = 0.2;
+const TRAIL_POINT_SPACING = 0.32;
 const SELF_HIT_GRACE = 3; // ignore the newest trail cells when checking self-hits
 const HEAD_HIT_DIST = 0.9;
 const SPAWN_SHIELD = 2;

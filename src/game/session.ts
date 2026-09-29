@@ -219,7 +219,8 @@ export class Session {
   /** Territory ranking of living players. */
   ranking(): Player[] {
     const w = this.world;
-    return w.players.filter((p) => p.alive).sort((a, b) => w.cells(b) - w.cells(a) || a.id - b.id);
+    const you = this.you;
+    return w.players.filter((p) => p.alive).sort((a, b) => w.cells(b) - w.cells(a) || (a === you ? -1 : b === you ? 1 : a.id - b.id));
   }
 
   /** Living players by land, then the players who have already been cut. */

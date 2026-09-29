@@ -157,10 +157,10 @@ class App implements AppApi {
     this.queueSearch('Connecting to an open lobby', 'The table fills as soon as a seat is free. Own the whole map.', () => {
       this.start({
         mode: 'free',
-        map: { shape: 'circle', size: 280, rocks: 8, seed: (Math.random() * 1e9) | 0 },
-        bots: 15,
+        map: { shape: 'circle', size: 200, rocks: 6, seed: (Math.random() * 1e9) | 0 },
+        bots: 9,
         difficulty: ['easy', 'normal', 'normal', 'hard'],
-        duration: 360,
+        duration: 300,
         winShare: 0.995,
         respawnYou: true,
         respawnBots: true,
@@ -173,10 +173,10 @@ class App implements AppApi {
     this.queueSearch('Finding a ranked lobby', 'Same loadout for everyone. Your rating moves with the finish.', () => {
       this.start({
         mode: 'ranked',
-        map: { shape: 'circle', size: 260, rocks: 7, seed: (Math.random() * 1e9) | 0 },
-        bots: 11,
+        map: { shape: 'circle', size: 190, rocks: 5, seed: (Math.random() * 1e9) | 0 },
+        bots: 7,
         difficulty: ['normal', 'normal', 'hard'],
-        duration: 240,
+        duration: 210,
         winShare: 0.995,
         respawnYou: false,
         respawnBots: false,
@@ -268,7 +268,7 @@ class App implements AppApi {
   }
 
   private partySpec(seed = (Math.random() * 1e9) | 0) {
-    return { shape: 'circle' as MapShape, size: 220, rocks: 6, seed };
+    return { shape: 'circle' as MapShape, size: 168, rocks: 4, seed };
   }
 
   private beginParty(seed?: number): void {
